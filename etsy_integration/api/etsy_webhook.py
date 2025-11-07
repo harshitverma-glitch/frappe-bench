@@ -108,7 +108,7 @@ def receive_order():
             "order_type": "Sales",
             "po_no": f"ETSY-{receipt_id}-{transaction_id_parsed}",
             "currency": "USD",
-            "custom_shopify_order_number": {receipt_id},
+            "shopify_order_number": {receipt_id},
 
             "items": [{
                 "item_code": product_id,
