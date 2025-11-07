@@ -104,7 +104,7 @@ def receive_order():
 
    "transaction_date": trans_date,
             "delivery_date": delivery_date,
-            "company": "ABC_company",
+            "company": "Cozy Corner Patios LLC",
             "order_type": "Sales",
             "po_no": f"ETSY-{receipt_id}-{transaction_id_parsed}",
             "currency": "USD",
