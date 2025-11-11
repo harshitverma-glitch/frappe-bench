@@ -89,35 +89,38 @@ def receive_order():
 
             shopify_properties = desc.strip()
 
-        # Calculate delivery date
+        # Calculate delivery date and ship deadline
         try:
             trans_date = getdate(transaction_date)
             delivery_date = add_days(trans_date, 7)
+            ship_deadline = add_days(trans_date, 6)  # 1 day before delivery
         except:
             trans_date = now_datetime().date()
             delivery_date = add_days(trans_date, 7)
+            ship_deadline = add_days(trans_date, 6)  # 1 day before delivery
 
         # Create Sales Order directly
         sales_order = frappe.get_doc({
             "doctype": "Sales Order",
             "customer": customer_name,
-
-   "transaction_date": trans_date,
+            "transaction_date": trans_date,
             "delivery_date": delivery_date,
+            "ship_deadline": ship_deadline,
             "company": "Cozy Corner Patios LLC",
             "order_type": "Sales",
             "po_no": f"ETSY-{receipt_id}-{transaction_id_parsed}",
             "currency": "USD",
-            "shopify_order_number": {receipt_id},
+            "shopify_order_number": receipt_id,
+            "set_warehouse": "Finished Goods - CCP",
 
             "items": [{
-    		"item_code": product_id,
-    		"delivery_date": delivery_date,
-    		"qty": float(qty),
-    		"rate": float(rate),
-    		"warehouse": "Finished Goods - CCP",  # Add your warehouse name here
-    		"custom_shopify_properties": shopify_properties
-}]
+                "item_code": product_id,
+                "delivery_date": delivery_date,
+                "qty": float(qty),
+                "rate": float(rate),
+                "warehouse": "Finished Goods - CCP",
+                "custom_shopify_properties": shopify_properties
+            }]
         })
 
         sales_order.insert(ignore_permissions=True)
