@@ -6,34 +6,33 @@ from frappe.utils import add_days, getdate, now_datetime
 @frappe.whitelist(allow_guest=False, methods=['POST'])
 def receive_order():
     """
-    Custom endpoint that handles newlines properly
-    Receives Etsy order data from Make.com and creates Sales Order
+    Custom webhook endpoint for Etsy / Make.com
+    Cleans incoming order JSON and creates/updates Sales Orders in ERPNext.
     """
 
     try:
-        # Get raw request data
         data = frappe.local.form_dict
 
+        # Extract main fields
         transaction_id = data.get('transaction_id', '')
         order_data_raw = data.get('order_data', '')
-        total_items = int(data.get('total_items', '1'))  # Total items in order
-        current_item = int(data.get('current_item', '1'))  # Current item number
+        total_items = int(data.get('total_items', '1'))
+        current_item = int(data.get('current_item', '1'))
 
-        # DON'T clean the raw data yet - we need to preserve structure
-        # Parse the order data FIRST
+        # Parse Etsy key-value pairs (e.g. "CUSTOMER: John Doe || PRODUCT: Table")
         parts = {}
         for part in order_data_raw.split("||"):
             if ":" in part:
                 key, value = part.split(":", 1)
-                parts[key] = value.strip()
+                parts[key.strip()] = value.strip()
 
-        # NOW clean individual fields (except DESC which needs newlines)
+        # Cleaning helper
         def clean_field(text):
             text = re.sub(r'[\r\n\t]+', ' ', text)
             text = re.sub(r'\s+', ' ', text)
             return text.strip()
 
-        # Extract and clean data
+        # Extract cleaned fields
         customer_name = clean_field(parts.get("CUSTOMER", ""))
         receipt_id = clean_field(parts.get("RECEIPT", ""))
         transaction_id_parsed = clean_field(parts.get("TRANSACTION", transaction_id))
@@ -41,135 +40,33 @@ def receive_order():
         product_id = clean_field(parts.get("PRODUCT", ""))
         qty = clean_field(parts.get("QTY", "1"))
         rate = clean_field(parts.get("RATE", "0"))
+        description = parts.get("DESC", "").strip()
 
-        # Check for existing Sales Order by receipt_id only
         po_number = f"ETSY-{receipt_id}"
-        existing_order = frappe.db.get_value("Sales Order", {"po_no": po_number}, "name")
 
-        if existing_order:
-            # Order already exists, check if it's submitted
-            sales_order = frappe.get_doc("Sales Order", existing_order)
-            
-            # If already submitted, return success (order was already completed)
-            if sales_order.docstatus == 1:
-                return {
-                    'status': 'success',
-                    'sales_order': sales_order.name,
-                    'message': f'Sales Order {sales_order.name} already submitted',
-                    'already_submitted': True
-                }
-            
-            # Order exists and is in Draft - add items to it
-            # Get variations (clean them)
-            var1_name = clean_field(parts.get("VAR1NAME", ""))
-            var1_val = clean_field(parts.get("VAR1VAL", ""))
-            var2_name = clean_field(parts.get("VAR2NAME", ""))
-            var2_val = clean_field(parts.get("VAR2VAL", ""))
-            var3_name = clean_field(parts.get("VAR3NAME", ""))
-            var3_val = clean_field(parts.get("VAR3VAL", ""))
-            
-            # Get description - DON'T clean newlines!
-            description = parts.get("DESC", "")
-            
-            # Check if variations exist
-            has_variations = var1_name and var1_val
-            
-            # Initialize shopify_properties variable
-            shopify_properties = ""
-            
-            # Format inline properties
-            if has_variations:
-                # Format with line breaks for variations
-                formatted_lines = []
-                if var1_name and var1_val:
-                    formatted_lines.append(f"{var1_name}: {var1_val}")
-                if var2_name and var2_val:
-                    formatted_lines.append(f"{var2_name}: {var2_val}")
-                if var3_name and var3_val:
-                    formatted_lines.append(f"{var3_name}: {var3_val}")
-                
-                shopify_properties = "\n".join(formatted_lines)
-            else:
-                # Keep newlines in description
-                desc = description.strip()
-                
-                # Remove "Your Customization Summary" if it exists
-                if desc.startswith("Your Customization Summary"):
-                    desc = desc.replace("Your Customization Summary", "", 1).strip()
-                
-                # Remove the Price line if present (starts with "Price")
-                lines = desc.split('\n')
-                filtered_lines = [line for line in lines if not line.strip().startswith('Price')]
-                desc = '\n'.join(filtered_lines)
-                
-                # Only remove tabs and excessive spaces, keep newlines
-                desc = re.sub(r'[\r\t]+', '', desc)
-                desc = re.sub(r' +', ' ', desc)
-                desc = re.sub(r'\n\n\n+', '\n\n', desc)
-                
-                shopify_properties = desc.strip()
-            
-            # Calculate delivery date
-            try:
-                trans_date = getdate(transaction_date)
-                delivery_date = add_days(trans_date, 7)
-            except:
-                trans_date = now_datetime().date()
-                delivery_date = add_days(trans_date, 7)
-            
-            # Check if this exact item already exists in the order
-            item_exists = False
-            for item in sales_order.items:
-                if (item.item_code == product_id and 
-                    item.custom_shopify_properties == shopify_properties):
-                    item_exists = True
-                    break
-            
-            if not item_exists:
-                # Add new item to existing order
-                sales_order.append('items', {
-                    "item_code": product_id,
-                    "delivery_date": delivery_date,
-                    "qty": float(qty),
-                    "rate": float(rate),
-                    "warehouse": "Finished Goods - CCP",
-                    "custom_shopify_properties": shopify_properties
-                })
-                
-                sales_order.save(ignore_permissions=True)
-                
-                # Check if this is the last item
-                if current_item >= total_items:
-                    # This is the last item - submit the order
-                    sales_order.submit()
-                    frappe.db.commit()
-                    
-                    return {
-                        'status': 'success',
-                        'sales_order': sales_order.name,
-                        'message': f'Final item added and Sales Order {sales_order.name} submitted',
-                        'shopify_properties': shopify_properties,
-                        'submitted': True
-                    }
-                else:
-                    frappe.db.commit()
-                    
-                    return {
-                        'status': 'success',
-                        'sales_order': sales_order.name,
-                        'message': f'Item {current_item} of {total_items} added to Sales Order {sales_order.name}',
-                        'shopify_properties': shopify_properties,
-                        'item_added': True
-                    }
-            else:
-                return {
-                    'status': 'success',
-                    'sales_order': sales_order.name,
-                    'message': f'Item already exists in Sales Order {sales_order.name}',
-                    'duplicate_item': True
-                }
+        # 1️⃣ Ensure Customer exists
+        if not frappe.db.exists("Customer", customer_name):
+            frappe.get_doc({
+                "doctype": "Customer",
+                "customer_name": customer_name,
+                "customer_group": "All Customer Groups",
+                "territory": "All Territories"
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
 
-        # Get variations (clean them)
+        # 2️⃣ Ensure Item exists
+        if not frappe.db.exists("Item", product_id):
+            frappe.get_doc({
+                "doctype": "Item",
+                "item_code": product_id,
+                "item_name": product_id,
+                "item_group": "Products",
+                "is_sales_item": 1,
+                "include_item_in_manufacturing": 0
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
+
+        # 3️⃣ Prepare custom properties (variations / personalization)
         var1_name = clean_field(parts.get("VAR1NAME", ""))
         var1_val = clean_field(parts.get("VAR1VAL", ""))
         var2_name = clean_field(parts.get("VAR2NAME", ""))
@@ -177,18 +74,7 @@ def receive_order():
         var3_name = clean_field(parts.get("VAR3NAME", ""))
         var3_val = clean_field(parts.get("VAR3VAL", ""))
 
-        # Get description - DON'T clean newlines!
-        description = parts.get("DESC", "")
-
-        # Check if variations exist
-        has_variations = var1_name and var1_val
-
-        # Initialize shopify_properties variable
-        shopify_properties = ""
-
-        # Format inline properties
-        if has_variations:
-            # Format with line breaks for variations
+        if var1_name and var1_val:
             formatted_lines = []
             if var1_name and var1_val:
                 formatted_lines.append(f"{var1_name}: {var1_val}")
@@ -196,93 +82,116 @@ def receive_order():
                 formatted_lines.append(f"{var2_name}: {var2_val}")
             if var3_name and var3_val:
                 formatted_lines.append(f"{var3_name}: {var3_val}")
-
-            shopify_properties = "\n".join(formatted_lines)
+            custom_properties = "\n".join(formatted_lines)
         else:
-            # Keep newlines in description
-            desc = description.strip()
-
-            # Remove "Your Customization Summary" if it exists
-            if desc.startswith("Your Customization Summary"):
-                desc = desc.replace("Your Customization Summary", "", 1).strip()
-
-            # Remove the Price line if present (starts with "Price")
+            # Clean up the description but keep newlines for readability
+            desc = description.replace("Your Customization Summary", "").strip()
             lines = desc.split('\n')
             filtered_lines = [line for line in lines if not line.strip().startswith('Price')]
             desc = '\n'.join(filtered_lines)
-
-            # Only remove tabs and excessive spaces, keep newlines
             desc = re.sub(r'[\r\t]+', '', desc)
             desc = re.sub(r' +', ' ', desc)
             desc = re.sub(r'\n\n\n+', '\n\n', desc)
+            custom_properties = desc.strip()
 
-            shopify_properties = desc.strip()
-
-        # Calculate delivery date and ship deadline
+        # 4️⃣ Calculate dates
         try:
             trans_date = getdate(transaction_date)
-            delivery_date = add_days(trans_date, 7)
-            ship_deadline = add_days(trans_date, 6)  # 1 day before delivery
         except:
             trans_date = now_datetime().date()
-            delivery_date = add_days(trans_date, 7)
-            ship_deadline = add_days(trans_date, 6)  # 1 day before delivery
+        delivery_date = add_days(trans_date, 7)
+        ship_deadline = add_days(trans_date, 6)  # ← ADDED: 1 day before delivery
 
-        # Create NEW Sales Order (first item)
+        # 5️⃣ Check if Sales Order already exists
+        existing_order = frappe.db.get_value("Sales Order", {"po_no": po_number}, "name")
+
+        if existing_order:
+            sales_order = frappe.get_doc("Sales Order", existing_order)
+
+            # Skip if already submitted
+            if sales_order.docstatus == 1:
+                return {
+                    'status': 'success',
+                    'sales_order': sales_order.name,
+                    'message': f'Sales Order {sales_order.name} already submitted'
+                }
+
+            # Check if same item already exists
+            duplicate = False
+            for item in sales_order.items:
+                if (item.item_code == product_id and
+                    item.custom_shopify_properties == custom_properties):
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                sales_order.append("items", {
+                    "item_code": product_id,
+                    "delivery_date": delivery_date,
+                    "qty": float(qty),
+                    "rate": float(rate),
+                    "warehouse": "Finished Goods - CCP",
+                    "custom_shopify_properties": custom_properties
+                })
+                sales_order.save(ignore_permissions=True)
+                frappe.db.commit()
+
+            # If last item, submit the order
+            if current_item >= total_items:
+                sales_order.submit()
+                frappe.db.commit()
+                return {
+                    'status': 'success',
+                    'sales_order': sales_order.name,
+                    'message': f"All {total_items} items added and Sales Order submitted.",
+                    'submitted': True
+                }
+
+            return {
+                'status': 'success',
+                'sales_order': sales_order.name,
+                'message': f"Item {current_item}/{total_items} added to existing Sales Order.",
+                'item_added': True
+            }
+
+        # 6️⃣ Create new Sales Order
         sales_order = frappe.get_doc({
             "doctype": "Sales Order",
             "customer": customer_name,
             "transaction_date": trans_date,
             "delivery_date": delivery_date,
-            "ship_deadline": ship_deadline,
+            "ship_deadline": ship_deadline,  # ← ADDED
             "company": "Cozy Corner Patios LLC",
             "order_type": "Sales",
             "po_no": po_number,
             "currency": "USD",
-            "shopify_order_number": receipt_id,
             "set_warehouse": "Finished Goods - CCP",
-
+            "shopify_order_number": receipt_id,
             "items": [{
                 "item_code": product_id,
                 "delivery_date": delivery_date,
                 "qty": float(qty),
                 "rate": float(rate),
                 "warehouse": "Finished Goods - CCP",
-                "custom_shopify_properties": shopify_properties
+                "custom_shopify_properties": custom_properties
             }]
         })
-
         sales_order.insert(ignore_permissions=True)
-        
-        # Check if this is a single-item order
+
+        # Submit only if this is the last item
         if total_items == 1 or current_item >= total_items:
-            # Single item or last item - submit immediately
             sales_order.submit()
-            frappe.db.commit()
-            
-            return {
-                'status': 'success',
-                'sales_order': sales_order.name,
-                'message': f'Sales Order {sales_order.name} created and submitted',
-                'shopify_properties': shopify_properties,
-                'submitted': True
-            }
-        else:
-            # Multi-item order - keep as draft for now
-            frappe.db.commit()
-            
-            return {
-                'status': 'success',
-                'sales_order': sales_order.name,
-                'message': f'Sales Order {sales_order.name} created (Draft) - waiting for {total_items - current_item} more items',
-                'shopify_properties': shopify_properties,
-                'new_order': True
-            }
+
+        frappe.db.commit()
+
+        return {
+            'status': 'success',
+            'sales_order': sales_order.name,
+            'message': f"Sales Order {sales_order.name} created successfully.",
+            'submitted': current_item >= total_items
+        }
 
     except Exception as e:
-        frappe.log_error(f"Etsy Webhook Error: {str(e)}", "Etsy Webhook")
+        frappe.log_error(f"Etsy Webhook Error: {str(e)}", "Etsy Webhook Failure")
         frappe.db.rollback()
-        return {
-            'status': 'error',
-            'message': str(e)
-        }
+        return {'status': 'error', 'message': str(e)}
