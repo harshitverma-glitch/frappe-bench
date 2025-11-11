@@ -111,12 +111,13 @@ def receive_order():
             "shopify_order_number": {receipt_id},
 
             "items": [{
-                "item_code": product_id,
-                "delivery_date": delivery_date,
-                "qty": float(qty),
-                "rate": float(rate),
-                "custom_shopify_properties": shopify_properties
-            }]
+    		"item_code": product_id,
+    		"delivery_date": delivery_date,
+    		"qty": float(qty),
+    		"rate": float(rate),
+    		"warehouse": "Finished Goods - CCP",  # Add your warehouse name here
+    		"custom_shopify_properties": shopify_properties
+}]
         })
 
         sales_order.insert(ignore_permissions=True)
