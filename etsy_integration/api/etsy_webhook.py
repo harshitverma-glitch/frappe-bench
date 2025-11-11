@@ -100,7 +100,7 @@ def receive_order():
         except:
             trans_date = now_datetime().date()
         delivery_date = add_days(trans_date, 7)
-        ship_deadline = add_days(trans_date, 6)  # ← ADDED: 1 day before delivery
+        ship_deadline = add_days(trans_date, 6)
 
         # 5️⃣ Check if Sales Order already exists
         existing_order = frappe.db.get_value("Sales Order", {"po_no": po_number}, "name")
@@ -116,25 +116,17 @@ def receive_order():
                     'message': f'Sales Order {sales_order.name} already submitted'
                 }
 
-            # Check if same item already exists
-            duplicate = False
-            for item in sales_order.items:
-                if (item.item_code == product_id and
-                    item.custom_shopify_properties == custom_properties):
-                    duplicate = True
-                    break
-
-            if not duplicate:
-                sales_order.append("items", {
-                    "item_code": product_id,
-                    "delivery_date": delivery_date,
-                    "qty": float(qty),
-                    "rate": float(rate),
-                    "warehouse": "Finished Goods - CCP",
-                    "custom_shopify_properties": custom_properties
-                })
-                sales_order.save(ignore_permissions=True)
-                frappe.db.commit()
+            # Add item to existing order (no duplicate check - each transaction is unique)
+            sales_order.append("items", {
+                "item_code": product_id,
+                "delivery_date": delivery_date,
+                "qty": float(qty),
+                "rate": float(rate),
+                "warehouse": "Finished Goods - CCP",
+                "custom_shopify_properties": custom_properties
+            })
+            sales_order.save(ignore_permissions=True)
+            frappe.db.commit()
 
             # If last item, submit the order
             if current_item >= total_items:
@@ -160,7 +152,7 @@ def receive_order():
             "customer": customer_name,
             "transaction_date": trans_date,
             "delivery_date": delivery_date,
-            "ship_deadline": ship_deadline,  # ← ADDED
+            "ship_deadline": ship_deadline,
             "company": "Cozy Corner Patios LLC",
             "order_type": "Sales",
             "po_no": po_number,
