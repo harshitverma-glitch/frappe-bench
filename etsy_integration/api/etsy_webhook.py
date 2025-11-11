@@ -124,6 +124,7 @@ def receive_order():
         })
 
         sales_order.insert(ignore_permissions=True)
+		sales_order.submit()
         frappe.db.commit()
 
         return {
