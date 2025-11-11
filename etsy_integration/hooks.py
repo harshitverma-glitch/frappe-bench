@@ -5,6 +5,14 @@ app_description = "Custom integration for Etsy orders"
 app_email = "harshitv998001@gmail.com"
 app_license = "mit"
 
+
+doc_events = {}
+scheduler_events = {}
+
+override_whitelisted_methods = {
+    "etsy_integration.api.etsy_webhook.receive_order": "etsy_integration.api.etsy_webhook.receive_order"
+}
+
 # Apps
 # ------------------
 
