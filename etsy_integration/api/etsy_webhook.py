@@ -38,6 +38,7 @@ def receive_order():
         transaction_id_parsed = clean_field(parts.get("TRANSACTION", transaction_id))
         transaction_date = clean_field(parts.get("DATE", ""))
         product_id = clean_field(parts.get("PRODUCT", ""))
+        product_title = clean_field(parts.get("TITLE", ""))  # ← NEW: Extract title
         qty = clean_field(parts.get("QTY", "1"))
         rate = clean_field(parts.get("RATE", "0"))
         description = parts.get("DESC", "").strip()
@@ -59,7 +60,7 @@ def receive_order():
             frappe.get_doc({
                 "doctype": "Item",
                 "item_code": product_id,
-                "item_name": product_id,
+                "item_name": product_title,  # ← CHANGED: Use title instead of product_id
                 "item_group": "Products",
                 "is_sales_item": 1,
                 "include_item_in_manufacturing": 0
