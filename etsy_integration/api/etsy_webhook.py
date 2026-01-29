@@ -188,3 +188,136 @@ def receive_order():
         frappe.log_error(f"Etsy Webhook Error: {str(e)}", "Etsy Webhook Failure")
         frappe.db.rollback()
         return {'status': 'error', 'message': str(e)}
+
+
+# =============================================================================
+# NEW FUNCTION: Update Address from Gmail Parsing
+# =============================================================================
+
+@frappe.whitelist(allow_guest=False, methods=['POST'])
+def update_address():
+    """
+    Update Sales Order with shipping address from Gmail parsing.
+    Called by Make.com scenario that parses Etsy sale notification emails.
+
+    Expected parameters:
+    - order_id: Etsy order/receipt number (e.g., "3938139725")
+    - recipient_name: Customer name from shipping address
+    - address_line1: Street address
+    - address_line2: (optional) Apartment, suite, etc.
+    - city: City name
+    - state: State/province code
+    - zip: Postal/ZIP code
+    - country: Country name
+    """
+
+    try:
+        data = frappe.local.form_dict
+
+        # Extract parameters
+        order_id = data.get('order_id', '').strip()
+        recipient_name = data.get('recipient_name', '').strip()
+        address_line1 = data.get('address_line1', '').strip()
+        address_line2 = data.get('address_line2', '').strip()
+        city = data.get('city', '').strip()
+        state = data.get('state', '').strip()
+        zip_code = data.get('zip', '').strip()
+        country = data.get('country', '').strip()
+
+        # Validate required fields
+        if not order_id:
+            return {
+                'status': 'error',
+                'message': 'Missing order_id parameter'
+            }
+
+        if not address_line1 or not city or not state or not zip_code:
+            return {
+                'status': 'error',
+                'message': 'Missing required address fields (address_line1, city, state, zip)'
+            }
+
+        # Find the Sales Order by PO Number (ETSY-{receipt_id})
+        po_number = f"ETSY-{order_id}"
+        sales_order_name = frappe.db.get_value("Sales Order", {"po_no": po_number}, "name")
+
+        if not sales_order_name:
+            return {
+                'status': 'error',
+                'message': f'Sales Order with PO# {po_number} not found'
+            }
+
+        # Get the Sales Order
+        sales_order = frappe.get_doc("Sales Order", sales_order_name)
+        customer_name = sales_order.customer
+
+        # Format the full address for display
+        address_parts = [address_line1]
+        if address_line2:
+            address_parts.append(address_line2)
+        address_parts.append(f"{city}, {state} {zip_code}")
+        if country:
+            address_parts.append(country)
+        full_address = "\n".join(address_parts)
+
+        # Create or update Address in ERPNext
+        address_title = f"{recipient_name} - {order_id}"
+
+        # Check if address already exists
+        existing_address = frappe.db.get_value("Address", {"address_title": address_title}, "name")
+
+        if existing_address:
+            # Update existing address
+            address_doc = frappe.get_doc("Address", existing_address)
+            address_doc.address_line1 = address_line1
+            address_doc.address_line2 = address_line2
+            address_doc.city = city
+            address_doc.state = state
+            address_doc.pincode = zip_code
+            address_doc.country = country if country else "United States"
+            address_doc.save(ignore_permissions=True)
+        else:
+            # Create new address
+            address_doc = frappe.get_doc({
+                "doctype": "Address",
+                "address_title": address_title,
+                "address_type": "Shipping",
+                "address_line1": address_line1,
+                "address_line2": address_line2,
+                "city": city,
+                "state": state,
+                "pincode": zip_code,
+                "country": country if country else "United States",
+                "links": [{
+                    "link_doctype": "Customer",
+                    "link_name": customer_name
+                }]
+            })
+            address_doc.insert(ignore_permissions=True)
+
+        frappe.db.commit()
+
+        # Update Sales Order with shipping address
+        # Use db_set to update even submitted documents
+        frappe.db.set_value("Sales Order", sales_order_name, {
+            "shipping_address_name": address_doc.name,
+            "shipping_address": full_address
+        }, update_modified=False)
+        frappe.db.commit()
+
+        return {
+            'status': 'success',
+            'message': f'Address updated for Sales Order {sales_order_name}',
+            'sales_order': sales_order_name,
+            'address': address_doc.name,
+            'full_address': full_address,
+            'docstatus': sales_order.docstatus
+        }
+
+    except Exception as e:
+        frappe.log_error(f"Update Address Error: {str(e)}", "Etsy Address Webhook")
+        frappe.db.rollback()
+        return {
+            'status': 'error',
+            'message': str(e)
+        }
