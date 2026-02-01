@@ -18,6 +18,7 @@ def receive_order():
         order_data_raw = data.get('order_data', '')
         total_items = int(data.get('total_items', '1'))
         current_item = int(data.get('current_item', '1'))
+        sales_channel = data.get('sales_channel', '')  # NEW: Extract sales channel (Etsy Maria or Etsy Zipcushions)
 
         # Parse Etsy key-value pairs (e.g. "CUSTOMER: John Doe || PRODUCT: Table")
         parts = {}
@@ -160,6 +161,7 @@ def receive_order():
             "currency": "USD",
             "set_warehouse": "Finished Goods - CCP",
             "shopify_order_number": receipt_id,
+            "custom_sales_channel": sales_channel,  # NEW: Save the sales channel (Etsy Maria or Etsy Zipcushions)
             "items": [{
                 "item_code": product_id,
                 "delivery_date": delivery_date,
