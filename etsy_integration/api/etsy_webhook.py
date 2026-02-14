@@ -193,7 +193,7 @@ def receive_order():
 
 
 # =============================================================================
-# NEW FUNCTION: Update Address from Gmail Parsing
+# UPDATE ADDRESS FUNCTION - WITH EMAIL SUPPORT
 # =============================================================================
 
 @frappe.whitelist(allow_guest=False, methods=['POST'])
@@ -211,6 +211,8 @@ def update_address():
     - state: State/province code
     - zip: Postal/ZIP code
     - country: Country name
+    - email_id: (NEW) Buyer's email address
+    - phone: (NEW) Buyer's phone number (optional)
     """
 
     try:
@@ -225,6 +227,8 @@ def update_address():
         state = data.get('state', '').strip()
         zip_code = data.get('zip', '').strip()
         country = data.get('country', '').strip()
+        email_id = data.get('email_id', '').strip()  # NEW: Extract email
+        phone = data.get('phone', '').strip()  # NEW: Extract phone (for future use)
 
         # Validate required fields
         if not order_id:
@@ -277,6 +281,12 @@ def update_address():
             address_doc.state = state
             address_doc.pincode = zip_code
             address_doc.country = country if country else "United States"
+            # NEW: Update email if provided
+            if email_id:
+                address_doc.email_id = email_id
+            # NEW: Update phone if provided
+            if phone:
+                address_doc.phone = phone
             address_doc.save(ignore_permissions=True)
         else:
             # Create new address
@@ -290,6 +300,8 @@ def update_address():
                 "state": state,
                 "pincode": zip_code,
                 "country": country if country else "United States",
+                "email_id": email_id if email_id else "",  # NEW: Add email
+                "phone": phone if phone else "",  # NEW: Add phone
                 "links": [{
                     "link_doctype": "Customer",
                     "link_name": customer_name
@@ -313,6 +325,8 @@ def update_address():
             'sales_order': sales_order_name,
             'address': address_doc.name,
             'full_address': full_address,
+            'email_id': email_id,  # NEW: Return email in response
+            'phone': phone,  # NEW: Return phone in response
             'docstatus': sales_order.docstatus
         }
 
