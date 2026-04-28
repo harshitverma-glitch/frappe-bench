@@ -3,12 +3,52 @@ import json
 import re
 from frappe.utils import add_days, getdate, now_datetime
 
-@frappe.whitelist(allow_guest=False, methods=['POST'])
+
+# ===========================================================================
+# Webhook authentication helper
+# ===========================================================================
+
+def _verify_webhook_secret():
+    """
+    Validate the X-Webhook-Secret header against the value stored in
+    site_config.json under the key `etsy_webhook_secret`.
+    Raises frappe.PermissionError (HTTP 403) if missing or wrong.
+    """
+    expected = frappe.conf.get("etsy_webhook_secret")
+    if not expected:
+        frappe.log_error(
+            "etsy_webhook_secret is not set in site_config.json",
+            "Etsy Webhook Auth",
+        )
+        frappe.throw(
+            "Webhook secret not configured on the server.",
+            frappe.PermissionError,
+        )
+
+    received = frappe.get_request_header("X-Webhook-Secret") or ""
+    if received != expected:
+        frappe.log_error(
+            "Invalid or missing X-Webhook-Secret header on Etsy webhook call",
+            "Etsy Webhook Auth",
+        )
+        frappe.throw(
+            "Invalid webhook secret.",
+            frappe.PermissionError,
+        )
+
+
+# ===========================================================================
+# Receive order from Etsy via Make.com
+# ===========================================================================
+
+@frappe.whitelist(allow_guest=True, methods=['POST'])
 def receive_order():
     """
     Custom webhook endpoint for Etsy / Make.com
     Cleans incoming order JSON and creates/updates Sales Orders in ERPNext.
     """
+
+    _verify_webhook_secret()
 
     try:
         data = frappe.local.form_dict
@@ -39,14 +79,14 @@ def receive_order():
         transaction_id_parsed = clean_field(parts.get("TRANSACTION", transaction_id))
         transaction_date = clean_field(parts.get("DATE", ""))
         product_id = clean_field(parts.get("PRODUCT", ""))
-        product_title = clean_field(parts.get("TITLE", ""))  # ← NEW: Extract title
+        product_title = clean_field(parts.get("TITLE", ""))  # NEW: Extract title
         qty = clean_field(parts.get("QTY", "1"))
         rate = clean_field(parts.get("RATE", "0"))
         description = parts.get("DESC", "").strip()
 
         po_number = f"ETSY-{receipt_id}"
 
-        # 1️⃣ Ensure Customer exists
+        # 1. Ensure Customer exists
         if not frappe.db.exists("Customer", customer_name):
             frappe.get_doc({
                 "doctype": "Customer",
@@ -56,19 +96,19 @@ def receive_order():
             }).insert(ignore_permissions=True)
             frappe.db.commit()
 
-        # 2️⃣ Ensure Item exists
+        # 2. Ensure Item exists
         if not frappe.db.exists("Item", product_id):
             frappe.get_doc({
                 "doctype": "Item",
                 "item_code": product_id,
-                "item_name": product_title,  # ← CHANGED: Use title instead of product_id
+                "item_name": product_title,  # CHANGED: Use title instead of product_id
                 "item_group": "Products",
                 "is_sales_item": 1,
                 "include_item_in_manufacturing": 0
             }).insert(ignore_permissions=True)
             frappe.db.commit()
 
-        # 3️⃣ Prepare custom properties (variations / personalization)
+        # 3. Prepare custom properties (variations / personalization)
         var1_name = clean_field(parts.get("VAR1NAME", ""))
         var1_val = clean_field(parts.get("VAR1VAL", ""))
         var2_name = clean_field(parts.get("VAR2NAME", ""))
@@ -96,7 +136,7 @@ def receive_order():
             desc = re.sub(r'\n\n\n+', '\n\n', desc)
             custom_properties = desc.strip()
 
-        # 4️⃣ Calculate dates
+        # 4. Calculate dates
         try:
             trans_date = getdate(transaction_date)
         except:
@@ -104,7 +144,7 @@ def receive_order():
         delivery_date = add_days(trans_date, 7)
         ship_deadline = add_days(trans_date, 6)
 
-        # 5️⃣ Check if Sales Order already exists
+        # 5. Check if Sales Order already exists
         existing_order = frappe.db.get_value("Sales Order", {"po_no": po_number}, "name")
 
         if existing_order:
@@ -148,7 +188,7 @@ def receive_order():
                 'item_added': True
             }
 
-        # 6️⃣ Create new Sales Order
+        # 6. Create new Sales Order
         sales_order = frappe.get_doc({
             "doctype": "Sales Order",
             "customer": customer_name,
@@ -186,6 +226,9 @@ def receive_order():
             'submitted': current_item >= total_items
         }
 
+    except frappe.PermissionError:
+        # Re-raise auth errors so Frappe returns a real 403 to Make
+        raise
     except Exception as e:
         frappe.log_error(f"Etsy Webhook Error: {str(e)}", "Etsy Webhook Failure")
         frappe.db.rollback()
@@ -196,7 +239,7 @@ def receive_order():
 # UPDATE ADDRESS FUNCTION - WITH EMAIL SUPPORT
 # =============================================================================
 
-@frappe.whitelist(allow_guest=False, methods=['POST'])
+@frappe.whitelist(allow_guest=True, methods=['POST'])
 def update_address():
     """
     Update Sales Order with shipping address from Gmail parsing.
@@ -214,6 +257,8 @@ def update_address():
     - email_id: (NEW) Buyer's email address
     - phone: (NEW) Buyer's phone number (optional)
     """
+
+    _verify_webhook_secret()
 
     try:
         data = frappe.local.form_dict
@@ -330,6 +375,8 @@ def update_address():
             'docstatus': sales_order.docstatus
         }
 
+    except frappe.PermissionError:
+        raise
     except Exception as e:
         frappe.log_error(f"Update Address Error: {str(e)}", "Etsy Address Webhook")
         frappe.db.rollback()
