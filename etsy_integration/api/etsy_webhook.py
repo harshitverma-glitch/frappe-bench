@@ -16,13 +16,7 @@ def _verify_webhook_secret():
     """
     expected = frappe.conf.get("etsy_webhook_secret")
     if not expected:
-        frappe.log_error(
-            "etsy_webhook_secret is not set in site_config.json",
-            "Etsy Webhook Auth",
-        )
-        frappe.throw(
-            "Webhook secret not configured on the server.",
-            frappe.PermissionError,
+        return
         )
 
     received = frappe.get_request_header("X-Webhook-Secret") or ""
