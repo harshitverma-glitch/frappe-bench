@@ -53,8 +53,12 @@ def receive_order():
         total_items = int(data.get('total_items', '1'))
         current_item = int(data.get('current_item', '1'))
         sales_channel = data.get('sales_channel', '')
-        etsy_net_total = float(data.get('etsy_net_total', 0)) # NEW: Extract sales channel (Etsy Maria or Etsy Zipcushions)
-
+        etsy_net_total_raw = str(data.get('etsy_net_total', '0'))
+        if '/' in etsy_net_total_raw:
+            num, div = etsy_net_total_raw.split('/')
+            etsy_net_total = float(num.strip()) / float(div.strip())
+        else:
+            etsy_net_total = float(etsy_net_total_raw or 0)
         # Parse Etsy key-value pairs (e.g. "CUSTOMER: John Doe || PRODUCT: Table")
         parts = {}
         for part in order_data_raw.split("||"):
