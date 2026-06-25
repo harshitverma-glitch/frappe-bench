@@ -17,7 +17,7 @@ def _verify_webhook_secret():
     expected = frappe.conf.get("etsy_webhook_secret")
     if not expected:
         return
-        )
+        
 
     received = frappe.get_request_header("X-Webhook-Secret") or ""
     if received != expected:
@@ -197,6 +197,7 @@ def receive_order():
             "set_warehouse": "Finished Goods - CCP",
             "shopify_order_number": receipt_id,
             "custom_sales_channel": sales_channel,  # NEW: Save the sales channel (Etsy Maria or Etsy Zipcushions)
+            "custom_etsy_net_total": etsy_net_total,
             "items": [{
                 "item_code": product_id,
                 "delivery_date": delivery_date,
