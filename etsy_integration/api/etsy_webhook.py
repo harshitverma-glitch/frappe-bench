@@ -53,6 +53,11 @@ def receive_order():
         total_items = int(data.get('total_items', '1'))
         current_item = int(data.get('current_item', '1'))
         sales_channel = data.get('sales_channel', '')
+        # NEW: robust variation transport — raw Etsy transaction.variations as JSON,
+        # plus personalization as its own field (Etsy treats it separately from variations)
+        variations_json = data.get('variations_json', '')
+        personalization_raw = data.get('personalization', '')
+        file_url = (data.get('file_url', '') or '').strip()
         etsy_net_total_raw = str(data.get('etsy_net_total', '0'))
         if '/' in etsy_net_total_raw:
             num, div = etsy_net_total_raw.split('/')
@@ -107,22 +112,47 @@ def receive_order():
             }).insert(ignore_permissions=True)
             frappe.db.commit()
 
-        # 3. Prepare custom properties (variations / personalization)
-        var1_name = clean_field(parts.get("VAR1NAME", ""))
-        var1_val = clean_field(parts.get("VAR1VAL", ""))
-        var2_name = clean_field(parts.get("VAR2NAME", ""))
-        var2_val = clean_field(parts.get("VAR2VAL", ""))
-        var3_name = clean_field(parts.get("VAR3NAME", ""))
-        var3_val = clean_field(parts.get("VAR3VAL", ""))
+        # 3. Prepare custom properties (ALL variations + personalization + file)
+        formatted_lines = []
 
-        if var1_name and var1_val:
-            formatted_lines = []
-            if var1_name and var1_val:
-                formatted_lines.append(f"{var1_name}: {var1_val}")
-            if var2_name and var2_val:
-                formatted_lines.append(f"{var2_name}: {var2_val}")
-            if var3_name and var3_val:
-                formatted_lines.append(f"{var3_name}: {var3_val}")
+        # (a) Preferred: raw Etsy variations array as JSON (unbounded length)
+        if variations_json:
+            try:
+                for v in json.loads(variations_json):
+                    name = clean_field(str(v.get("formatted_name", "")))
+                    val = clean_field(str(v.get("formatted_value", "")))
+                    if name and val:
+                        formatted_lines.append(f"{name}: {val}")
+            except (ValueError, TypeError):
+                frappe.log_error(
+                    f"Bad variations_json for {po_number}: {variations_json[:500]}",
+                    "Etsy Webhook Variations",
+                )
+
+        # (b) Backward-compat: dynamically scan VAR{n}NAME/VAR{n}VAL for ALL n (no cap)
+        if not formatted_lines:
+            var_indices = sorted(
+                int(m.group(1))
+                for k in parts
+                for m in [re.match(r"VAR(\d+)NAME$", k)]
+                if m
+            )
+            for n in var_indices:
+                name = clean_field(parts.get(f"VAR{n}NAME", ""))
+                val = clean_field(parts.get(f"VAR{n}VAL", ""))
+                if name and val:
+                    formatted_lines.append(f"{name}: {val}")
+
+        # (c) Personalization — a distinct Etsy field, not a variation
+        pers = clean_field(personalization_raw) or clean_field(parts.get("PERSONALIZATION", ""))
+        if pers:
+            formatted_lines.append(f"Personalization: {pers}")
+
+        # (d) Uploaded file reference, if Make could supply one
+        if file_url:
+            formatted_lines.append(f"Uploaded File: {file_url}")
+
+        if formatted_lines:
             custom_properties = "\n".join(formatted_lines)
         else:
             # Clean up the description but keep newlines for readability
