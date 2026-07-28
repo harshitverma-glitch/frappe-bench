@@ -5,6 +5,45 @@ from frappe.utils import add_days, getdate, now_datetime
 
 
 # ===========================================================================
+# Country resolution helper
+# ===========================================================================
+
+def _resolve_country(value):
+    """
+    Resolve an incoming country value to an existing Country doc name.
+
+    Accepts either a full Country doc name ("United Kingdom") or an ISO-2
+    code ("GB", "CA", "AU") as sent by the Etsy API module in Make.com.
+
+    Returns the matching Country doc name, or None if it cannot be
+    resolved. Callers decide what to do on failure - this helper never
+    falls back to a default country.
+    """
+    if not value:
+        return None
+
+    value = value.strip()
+    if not value:
+        return None
+
+    # Already a valid Country doc name
+    if frappe.db.exists("Country", value):
+        return value
+
+    # ISO-2 code lookup (Country.code is stored lowercase, e.g. "gb")
+    country_name = frappe.db.get_value("Country", {"code": value.lower()}, "name")
+    if country_name:
+        return country_name
+
+    # Case-insensitive fallback on the country name itself
+    country_name = frappe.db.get_value("Country", {"name": ("like", value)}, "name")
+    if country_name:
+        return country_name
+
+    return None
+
+
+# ===========================================================================
 # Webhook authentication helper
 # ===========================================================================
 
@@ -243,8 +282,8 @@ def receive_order():
 @frappe.whitelist(allow_guest=True, methods=['POST'])
 def update_address():
     """
-    Update Sales Order with shipping address from Gmail parsing.
-    Called by Make.com scenario that parses Etsy sale notification emails.
+    Update Sales Order with shipping address from the Etsy receipt.
+    Called by the Etsy API module in Make.com.
 
     Expected parameters:
     - order_id: Etsy order/receipt number (e.g., "3938139725")
@@ -254,7 +293,7 @@ def update_address():
     - city: City name
     - state: State/province code
     - zip: Postal/ZIP code
-    - country: Country name
+    - country: Country name ("United Kingdom") or ISO-2 code ("GB")
     - email_id: (NEW) Buyer's email address
     - phone: (NEW) Buyer's phone number (optional)
     """
@@ -303,13 +342,16 @@ def update_address():
         sales_order = frappe.get_doc("Sales Order", sales_order_name)
         customer_name = sales_order.customer
 
+        # Map the incoming country (name or ISO-2 code) to a Country doc name
+        resolved_country = _resolve_country(country)
+
         # Format the full address for display
         address_parts = [address_line1]
         if address_line2:
             address_parts.append(address_line2)
         address_parts.append(f"{city}, {state} {zip_code}")
-        if country:
-            address_parts.append(country)
+        if resolved_country or country:
+            address_parts.append(resolved_country or country)
         full_address = "\n".join(address_parts)
 
         # Create or update Address in ERPNext
@@ -326,7 +368,18 @@ def update_address():
             address_doc.city = city
             address_doc.state = state
             address_doc.pincode = zip_code
-            address_doc.country = country if country else "United States"
+            if resolved_country:
+                address_doc.country = resolved_country
+            elif country:
+                # Unknown value - keep whatever is already on the address
+                # rather than silently stamping it "United States"
+                frappe.log_error(
+                    title="Etsy update_address: unknown country",
+                    message=(
+                        f"Order {order_id}: could not resolve country {country!r} "
+                        f"to a Country record. Left existing country unchanged."
+                    ),
+                )
             # NEW: Update email if provided
             if email_id:
                 address_doc.email_id = email_id
@@ -336,6 +389,17 @@ def update_address():
             address_doc.save(ignore_permissions=True)
         else:
             # Create new address
+            if not resolved_country:
+                if country:
+                    frappe.log_error(
+                        title="Etsy update_address: unknown country",
+                        message=(
+                            f"Order {order_id}: could not resolve country {country!r} "
+                            f"to a Country record. Defaulting to United States."
+                        ),
+                    )
+                resolved_country = "United States"
+
             address_doc = frappe.get_doc({
                 "doctype": "Address",
                 "address_title": address_title,
@@ -345,7 +409,7 @@ def update_address():
                 "city": city,
                 "state": state,
                 "pincode": zip_code,
-                "country": country if country else "United States",
+                "country": resolved_country,
                 "email_id": email_id if email_id else "",  # NEW: Add email
                 "phone": phone if phone else "",  # NEW: Add phone
                 "links": [{
