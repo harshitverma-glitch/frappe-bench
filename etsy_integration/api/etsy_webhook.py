@@ -176,7 +176,6 @@ def receive_order():
         product_title = clean_field(parts.get("TITLE", ""))  # NEW: Extract title
         qty = clean_field(parts.get("QTY", "1"))
         rate = clean_field(parts.get("RATE", "0"))
-        description = parts.get("DESC", "").strip()
 
         po_number = f"ETSY-{receipt_id}"
 
@@ -203,32 +202,17 @@ def receive_order():
             frappe.db.commit()
 
         # 3. Prepare custom properties (variations / personalization)
-        var1_name = clean_field(parts.get("VAR1NAME", ""))
-        var1_val = clean_field(parts.get("VAR1VAL", ""))
-        var2_name = clean_field(parts.get("VAR2NAME", ""))
-        var2_val = clean_field(parts.get("VAR2VAL", ""))
-        var3_name = clean_field(parts.get("VAR3NAME", ""))
-        var3_val = clean_field(parts.get("VAR3VAL", ""))
-
-        if var1_name and var1_val:
-            formatted_lines = []
-            if var1_name and var1_val:
-                formatted_lines.append(f"{var1_name}: {var1_val}")
-            if var2_name and var2_val:
-                formatted_lines.append(f"{var2_name}: {var2_val}")
-            if var3_name and var3_val:
-                formatted_lines.append(f"{var3_name}: {var3_val}")
-            custom_properties = "\n".join(formatted_lines)
-        else:
-            # Clean up the description but keep newlines for readability
-            desc = description.replace("Your Customization Summary", "").strip()
-            lines = desc.split('\n')
-            filtered_lines = [line for line in lines if not line.strip().startswith('Price')]
-            desc = '\n'.join(filtered_lines)
-            desc = re.sub(r'[\r\t]+', '', desc)
-            desc = re.sub(r' +', ' ', desc)
-            desc = re.sub(r'\n\n\n+', '\n\n', desc)
-            custom_properties = desc.strip()
+        # Etsy's variations[] carries personalization as one of its entries, so
+        # walking every VAR{i}NAME/VAR{i}VAL pair present picks both up.
+        custom_properties_lines = []
+        i = 1
+        while f"VAR{i}NAME" in parts:
+            var_name = clean_field(parts.get(f"VAR{i}NAME", ""))
+            var_val = clean_field(parts.get(f"VAR{i}VAL", ""))
+            if var_name and var_val:
+                custom_properties_lines.append(f"{var_name}: {var_val}")
+            i += 1
+        custom_properties = "\n".join(custom_properties_lines)
 
         # 4. Calculate dates
         try:
