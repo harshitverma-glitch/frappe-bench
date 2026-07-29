@@ -1,7 +1,7 @@
 import frappe
 import json
 import re
-from frappe.utils import add_days, getdate, now_datetime
+from frappe.utils import add_days, escape_html, getdate, now_datetime
 
 
 # ===========================================================================
@@ -41,6 +41,60 @@ def _resolve_country(value):
         return country_name
 
     return None
+
+
+# ===========================================================================
+# Failure notification helper
+# ===========================================================================
+
+def _notify_address_failure(order_id, country, exception):
+    """
+    Email the monitoring address configured as `etsy_error_notify_email` in
+    site_config.json when update_address fails.
+
+    Sent with now=True on purpose: the caller rolls the transaction back
+    immediately after, and a queued (delayed) email would be rolled back
+    along with it and never go out.
+
+    Never raises - a notification failure must not turn into a request
+    failure. Falls back to the Error Log when no address is configured or
+    the send itself fails.
+    """
+    recipients = frappe.conf.get("etsy_error_notify_email")
+    if not recipients:
+        frappe.log_error(
+            title="Etsy update_address: notification skipped",
+            message=(
+                "etsy_error_notify_email is not set in site_config.json, so no "
+                f"alert was sent for order {order_id!r} (country {country!r}): "
+                f"{exception}"
+            ),
+        )
+        return
+
+    try:
+        frappe.sendmail(
+            recipients=recipients,
+            subject=f"Etsy update_address failed for order {order_id or '(unknown)'}",
+            message=(
+                "<p>update_address failed while processing an Etsy address "
+                "update. The Sales Order shipping address was not saved.</p>"
+                "<ul>"
+                f"<li><b>Order / receipt:</b> {escape_html(str(order_id))}</li>"
+                f"<li><b>Raw country received:</b> {escape_html(str(country))}</li>"
+                f"<li><b>Error:</b> {escape_html(str(exception))}</li>"
+                "</ul>"
+            ),
+            now=True,
+        )
+    except Exception as mail_error:
+        frappe.log_error(
+            title="Etsy update_address: notification failed",
+            message=(
+                f"Could not email {recipients!r} about the failure on order "
+                f"{order_id!r} (country {country!r}): {mail_error}"
+            ),
+        )
 
 
 # ===========================================================================
@@ -300,6 +354,11 @@ def update_address():
 
     _verify_webhook_secret()
 
+    # Pre-set so the failure notifier can still report them if the request
+    # blows up before these are parsed out of the payload
+    order_id = ''
+    country = ''
+
     try:
         data = frappe.local.form_dict
 
@@ -342,16 +401,27 @@ def update_address():
         sales_order = frappe.get_doc("Sales Order", sales_order_name)
         customer_name = sales_order.customer
 
-        # Map the incoming country (name or ISO-2 code) to a Country doc name
+        # Map the incoming country (name or ISO-2 code) to a Country doc name.
+        # If it cannot be resolved, keep the raw value exactly as Etsy sent it -
+        # never substitute a default, which silently mislabels the order.
         resolved_country = _resolve_country(country)
+        country_value = resolved_country or country
+        if country and not resolved_country:
+            frappe.log_error(
+                title="Etsy update_address: unknown country",
+                message=(
+                    f"Order {order_id}: could not resolve country {country!r} "
+                    f"to a Country record. Using the raw value as received."
+                ),
+            )
 
         # Format the full address for display
         address_parts = [address_line1]
         if address_line2:
             address_parts.append(address_line2)
         address_parts.append(f"{city}, {state} {zip_code}")
-        if resolved_country or country:
-            address_parts.append(resolved_country or country)
+        if country_value:
+            address_parts.append(country_value)
         full_address = "\n".join(address_parts)
 
         # Create or update Address in ERPNext
@@ -368,18 +438,8 @@ def update_address():
             address_doc.city = city
             address_doc.state = state
             address_doc.pincode = zip_code
-            if resolved_country:
-                address_doc.country = resolved_country
-            elif country:
-                # Unknown value - keep whatever is already on the address
-                # rather than silently stamping it "United States"
-                frappe.log_error(
-                    title="Etsy update_address: unknown country",
-                    message=(
-                        f"Order {order_id}: could not resolve country {country!r} "
-                        f"to a Country record. Left existing country unchanged."
-                    ),
-                )
+            if country_value:
+                address_doc.country = country_value
             # NEW: Update email if provided
             if email_id:
                 address_doc.email_id = email_id
@@ -389,17 +449,6 @@ def update_address():
             address_doc.save(ignore_permissions=True)
         else:
             # Create new address
-            if not resolved_country:
-                if country:
-                    frappe.log_error(
-                        title="Etsy update_address: unknown country",
-                        message=(
-                            f"Order {order_id}: could not resolve country {country!r} "
-                            f"to a Country record. Defaulting to United States."
-                        ),
-                    )
-                resolved_country = "United States"
-
             address_doc = frappe.get_doc({
                 "doctype": "Address",
                 "address_title": address_title,
@@ -409,7 +458,7 @@ def update_address():
                 "city": city,
                 "state": state,
                 "pincode": zip_code,
-                "country": resolved_country,
+                "country": country_value,
                 "email_id": email_id if email_id else "",  # NEW: Add email
                 "phone": phone if phone else "",  # NEW: Add phone
                 "links": [{
@@ -444,6 +493,7 @@ def update_address():
         raise
     except Exception as e:
         frappe.log_error(f"Update Address Error: {str(e)}", "Etsy Address Webhook")
+        _notify_address_failure(order_id, country, e)
         frappe.db.rollback()
         return {
             'status': 'error',
