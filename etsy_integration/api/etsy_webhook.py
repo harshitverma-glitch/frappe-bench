@@ -176,6 +176,7 @@ def receive_order():
         product_title = clean_field(parts.get("TITLE", ""))  # NEW: Extract title
         qty = clean_field(parts.get("QTY", "1"))
         rate = clean_field(parts.get("RATE", "0"))
+        description = parts.get("DESC", "").strip()
 
         po_number = f"ETSY-{receipt_id}"
 
@@ -201,7 +202,7 @@ def receive_order():
             }).insert(ignore_permissions=True)
             frappe.db.commit()
 
-        # 3. Prepare custom properties (variations / personalization)
+        # 3. Prepare custom properties (variations / personalization / assisted)
         # Etsy's variations[] carries personalization as one of its entries, so
         # walking every VAR{i}NAME/VAR{i}VAL pair present picks both up.
         custom_properties_lines = []
@@ -212,7 +213,20 @@ def receive_order():
             if var_name and var_val:
                 custom_properties_lines.append(f"{var_name}: {var_val}")
             i += 1
-        custom_properties = "\n".join(custom_properties_lines)
+
+        if custom_properties_lines:
+            custom_properties = "\n".join(custom_properties_lines)
+        else:
+            # Assisted / description-only orders — customization sits in the
+            # "Your Customization Summary" text block instead of variations[]
+            desc = description.replace("Your Customization Summary", "").strip()
+            lines = desc.split('\n')
+            filtered_lines = [line for line in lines if not line.strip().startswith('Price')]
+            desc = '\n'.join(filtered_lines)
+            desc = re.sub(r'[\r\t]+', '', desc)
+            desc = re.sub(r' +', ' ', desc)
+            desc = re.sub(r'\n\n\n+', '\n\n', desc)
+            custom_properties = desc.strip()
 
         # 4. Calculate dates
         try:
@@ -398,6 +412,10 @@ def update_address():
                     f"to a Country record. Using the raw value as received."
                 ),
             )
+        # The raw value is not a valid Country link, so Frappe would reject it
+        # with LinkValidationError. Skip link validation for that case only -
+        # the resolved path keeps full validation.
+        skip_link_validation = bool(country_value) and not resolved_country
 
         # Format the full address for display
         address_parts = [address_line1]
@@ -430,6 +448,8 @@ def update_address():
             # NEW: Update phone if provided
             if phone:
                 address_doc.phone = phone
+            if skip_link_validation:
+                address_doc.flags.ignore_links = True
             address_doc.save(ignore_permissions=True)
         else:
             # Create new address
@@ -450,6 +470,8 @@ def update_address():
                     "link_name": customer_name
                 }]
             })
+            if skip_link_validation:
+                address_doc.flags.ignore_links = True
             address_doc.insert(ignore_permissions=True)
 
         frappe.db.commit()
